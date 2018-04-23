@@ -58,11 +58,9 @@ const unsigned int windowWidth = 600, windowHeight = 600;
 
 // OpenGL major and minor versions
 int majorVersion = 3, minorVersion = 3;
-
-int MAXDEPTH = 5;
+const unsigned int MAXDEPTH = 5;
 bool START_OUT = false;
-bool FISH_VIEW = true;
-const unsigned int screenWidth = windowWidth, screenHeight = windowHeight;
+const unsigned int screenWidth = windowWidth/2, screenHeight = windowHeight/2;
 
 struct vec3 {
 	float x, y, z;
@@ -390,15 +388,16 @@ class Scene {
 	std::vector<Intersectable *> objects;
 	std::vector<PointLight *> lights;
 	Camera camera;
-	//FishCamera camera;
+	FishCamera fishCamera;
 	vec3 La;
 public:
-	void build() {
+	void build(bool parab) {
 		vec3 eye = vec3(0, -17, 1.5f);
 		vec3 vup = vec3(0, 0, 1);
 		vec3 lookat = vec3(0, 5, 5.5f);
 		float fov = 45 * M_PI / 180;
 		camera.set(eye, lookat, vup, fov);
+		fishCamera.set(vec3(0, -14, 1.5f), lookat, vup, fov);
 		La = vec3(0.1f, 0.1f, 0.1f); //Ambiens fény
 		lights.push_back(new PointLight(vec3(1, -5, 2), vec3(5, 5, 5)));
 		lights.push_back(new PointLight(vec3(2, -8, 5), vec3(15, 15, 15)));
@@ -414,17 +413,21 @@ public:
 		vec3 color5(0.6f, 0.6f, 0.0f);
 		vec3 color6(0.6f, 0.1f, 0.7f);
 	
-		//Gömb (rücskös, arany, üveg)
-		//objects.push_back(new Sphere(vec3(1, 0, 2), 2.0f, new Material(color0, ks, 50)));
-		//objects.push_back(new Sphere(vec3(-3, 0, 2), 2.0f, new Gold(color0, ks, 50)));
-		//objects.push_back(new Sphere(vec3(5, 0, 2), 5.0f, new Glass(color0, ks, 500)));
+		//Gömbök aranyból
+		objects.push_back(new Sphere(vec3(-7, 3, 0), 2.0f, new Gold(color0, ks, 50)));
+		objects.push_back(new Sphere(vec3(7, 3, 0), 2.0f, new Gold(color0, ks, 50)));
+		objects.push_back(new Sphere(vec3(-7, 3, 10), 2.0f, new Gold(color0, ks, 50)));
+		objects.push_back(new Sphere(vec3(7, 3, 10), 2.0f, new Gold(color0, ks, 50)));
 
-		//Paraboloid (lefelé és felfelé nyitott)
+		//Paraboloidok aranyból (lefelé és felfelé nyitott)
 		objects.push_back(new Paraboloid(vec3(1, -1, 4), vec3(1, -1, 5), vec3(0, 0, 1), new Gold(color0, ks, 50)));
 		objects.push_back(new Paraboloid(vec3(1, -1, 5), vec3(1, -1, 4), vec3(0, 0, 1), new Gold(color0, ks, 50)));
 
 		//Paraboloid akvárium (vízbõl)
-		objects.push_back(new Paraboloid(vec3(0, -17, 0), vec3(0, -17, -1), vec3(0, 0, 1), new Water(color0, ks, 500)));
+		if (parab == true)
+		{
+			objects.push_back(new Paraboloid(vec3(0, -14, 0), vec3(0, -14, -1), vec3(0, 0, 1), new Water(color0, ks, 500)));
+		}
 
 		//Plafon piros
 		objects.push_back(new Flat(vec3(10, 10, 10), vec3(0, 0, -1), new Material(color1, ks, 1000)));
@@ -438,7 +441,7 @@ public:
 		//Jobb fal világoszöld
 		objects.push_back(new Flat(vec3(-10, 10, 10), vec3(1, 0, 0), new Material(color4, ks, 1000)));
 
-		//Hátsó fal sárga
+		//Elsõ fal sárga
 		objects.push_back(new Flat(vec3(-10, 10, 10), vec3(0, -1, 0), new Material(color5, ks, 1000)));
 
 		//Hátsó fal lila
@@ -448,7 +451,14 @@ public:
 	void render(vec3 image[]) {
 #pragma omp parallel for
 		for (int Y = 0; Y < screenHeight; Y++) {
-			for (int X = 0; X < screenWidth; X++) image[Y * screenWidth + X] = trace(camera.getray(X, Y));
+			for (int X = 0; X < screenWidth; X++) {
+				if (X < screenWidth / 2) { //Elsõ negyed
+					image[Y * screenWidth + X] = trace(camera.getray(2*X, Y));
+				}
+				if (X > screenWidth / 2) { //Második negyed
+					image[Y * screenWidth + X] = trace(fishCamera.getray(2*X - screenWidth, Y));
+				}
+			}
 		}
 	}
 
@@ -527,7 +537,8 @@ public:
 	}
 };
 
-Scene scene;
+Scene topScene;
+Scene bottomScene;
 
 void getErrorInfo(unsigned int handle) {
 	int logLen, written;
@@ -588,7 +599,6 @@ const char *fragmentSource = R"(
 	}
 )";
 
-
 // handle of the shader program
 unsigned int shaderProgram;
 
@@ -631,13 +641,34 @@ public:
 
 // The virtual world: single quad
 FullScreenTexturedQuad fullScreenTexturedQuad;
-vec3 image[screenWidth * screenHeight];	// The image, which stores the ray tracing result
+vec3 topImage[screenWidth * screenHeight * 2];	//A felsõ 2 kép
+vec3 bottomImage[screenWidth * screenHeight * 2]; //Az alsó két kép
+vec3 image[windowWidth * windowHeight]; // The image, which stores the ray tracing result
 
-										// Initialization, create an OpenGL context
+void CombineIntoOne(vec3* bottom, vec3* top) {
+	for (int Y = 0; Y < windowHeight; Y++) {
+		for (int X = 0; X < windowWidth; X++) {
+			if (Y > screenHeight) {
+				image[Y * screenWidth + X - screenHeight * screenWidth / 2] = top[(Y - screenHeight) * windowWidth + X]; //Top
+			}
+			else {
+				image[Y * screenWidth + X] = bottom[Y * windowWidth + X]; //Bottom
+			}
+		}
+	}
+}
+
+// Initialization, create an OpenGL context
 void onInitialization() {
-		glViewport(0, 0, screenWidth, screenHeight);
-		scene.build();
-		scene.render(image);
+		glViewport(0, 0, windowWidth, windowHeight);
+		topScene.build(false);
+		topScene.render(topImage);
+
+		bottomScene.build(true);
+		bottomScene.render(bottomImage);
+
+		CombineIntoOne(bottomImage, topImage);
+
 		fullScreenTexturedQuad.Create(image);
 
 		// Create vertex shader from string
